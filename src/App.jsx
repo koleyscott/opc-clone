@@ -14,16 +14,23 @@ function normType(t) {
 function payoffAtPrice(leg, S) {
   const K = clampNumber(leg.strike, 0);
   const qty = clampNumber(leg.qty, 0);
-  const side = leg.side === "SHORT" ? -1 : 1;
   const type = normType(leg.type);
 
-  // Ignore premium for now since we don't have it in the UI yet.
-  // This is intrinsic payoff only, which is still useful for shape and breakevens.
+  // Premium is per share (option price). Contracts are typically x100.
+  const premium = clampNumber(leg.premium, 0);
+
+  // Long: +1, Short: -1
+  const dir = leg.side === "SHORT" ? -1 : 1;
+
   let intrinsic = 0;
   if (type === "C") intrinsic = Math.max(0, S - K);
   else intrinsic = Math.max(0, K - S);
 
-  return side * qty * intrinsic * 100;
+  // Long PnL per share = intrinsic - premium
+  // Short PnL per share = premium - intrinsic = -(intrinsic - premium)
+  const perSharePnL = dir * (intrinsic - premium);
+
+  return qty * perSharePnL * 100;
 }
 
 function buildPayoffSeries(legs, spot) {
@@ -32,7 +39,7 @@ function buildPayoffSeries(legs, spot) {
 
   const minS = Math.max(1, center * 0.5);
   const maxS = center * 1.5;
-  const steps = 200;
+  const steps = 220;
   const step = (maxS - minS) / steps;
 
   const xs = [];
@@ -70,7 +77,6 @@ function svgPathFromSeries(xs, ys, width, height, padding = 30) {
     d += i === 0 ? `M ${px} ${py}` : ` L ${px} ${py}`;
   }
 
-  // axis lines (y=0 and x=spot handled outside)
   const yZero = yToPx(0);
 
   return {
@@ -90,10 +96,10 @@ export default function App() {
   const [expErr, setExpErr] = useState(null);
 
   const [legs, setLegs] = useState([
-    { id: crypto.randomUUID(), side: "LONG", type: "C", qty: 1, strike: 500, exp: "" },
+    { id: crypto.randomUUID(), side: "LONG", type: "C", qty: 1, strike: 500, exp: "", premium: 0 },
   ]);
 
-  // Fetch quote (works for market closed because backend returns last close)
+  // Fetch quote (backend returns last close when market is closed)
   useEffect(() => {
     setErr(null);
     setSpot(null);
@@ -145,7 +151,15 @@ export default function App() {
   function addLeg() {
     setLegs((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), side: "LONG", type: "C", qty: 1, strike: clampNumber(spot, 500), exp: "" },
+      {
+        id: crypto.randomUUID(),
+        side: "LONG",
+        type: "C",
+        qty: 1,
+        strike: clampNumber(spot, 500),
+        exp: "",
+        premium: 0,
+      },
     ]);
   }
 
@@ -160,7 +174,7 @@ export default function App() {
   return (
     <div style={{ padding: 16, fontFamily: "system-ui, Arial, sans-serif", maxWidth: 1100 }}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <h2 style={{ margin: 0 }}>Option Payoff Calculator (TEST)</h2>
+        <h2 style={{ margin: 0 }}>Option Payoff Calculator</h2>
 
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <label style={{ fontSize: 14 }}>
@@ -178,20 +192,16 @@ export default function App() {
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
           <div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>Spot</div>
-            <div style={{ fontSize: 20, fontWeight: 700 }}>
-              {spot == null ? "loading..." : Number(spot).toFixed(2)}
-            </div>
+            <div style={{ fontSize: 20, fontWeight: 700 }}>{spot == null ? "loading..." : Number(spot).toFixed(2)}</div>
           </div>
 
           <div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>Mode</div>
-            <div style={{ fontSize: 14 }}>
-              {spotMeta?.source ? String(spotMeta.source) : err ? "error" : "loading"}
-            </div>
+            <div style={{ fontSize: 14 }}>{spotMeta?.source ? String(spotMeta.source) : err ? "error" : "loading"}</div>
           </div>
 
           <div>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>Payoff at spot (intrinsic)</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>Payoff at spot (includes premium)</div>
             <div style={{ fontSize: 14 }}>{totalAtSpot == null ? "n/a" : totalAtSpot.toFixed(2)}</div>
           </div>
 
@@ -202,9 +212,7 @@ export default function App() {
           </button>
         </div>
 
-        {err ? (
-          <div style={{ marginTop: 10, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</div>
-        ) : null}
+        {err ? <div style={{ marginTop: 10, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</div> : null}
       </div>
 
       <div style={{ marginTop: 14, padding: 12, border: "1px solid #ddd", borderRadius: 10 }}>
@@ -215,7 +223,6 @@ export default function App() {
 
           {chart.bounds ? (
             <>
-              {/* y=0 axis */}
               <line
                 x1="34"
                 x2={chart.width - 34}
@@ -225,7 +232,6 @@ export default function App() {
                 strokeWidth="1"
               />
 
-              {/* spot vertical */}
               {spot != null ? (
                 <line
                   x1={chart.bounds.xToPx(clampNumber(spot))}
@@ -240,7 +246,6 @@ export default function App() {
 
               <path d={chart.path} fill="none" stroke="black" strokeWidth="2" />
 
-              {/* labels */}
               <text x="34" y={chart.height - 10} fontSize="12" fill="#333">
                 {chart.bounds.xMin.toFixed(0)}
               </text>
@@ -255,13 +260,14 @@ export default function App() {
         </svg>
 
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>
-          Intrinsic payoff only (premium not included yet). This still shows structure and breakeven shape.
+          Payoff includes premium (price per share) times 100 per contract. This is still “at expiry” style payoff.
         </div>
       </div>
 
       <div style={{ marginTop: 14, padding: 12, border: "1px solid #ddd", borderRadius: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontWeight: 700 }}>Option Legs</div>
+
           {expErr ? (
             <div style={{ color: "crimson", fontSize: 12 }}>Expirations unavailable: {expErr}</div>
           ) : expirations.length ? (
@@ -272,17 +278,19 @@ export default function App() {
         </div>
 
         <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
                 <th style={{ padding: 8 }}>Side</th>
                 <th style={{ padding: 8 }}>Type</th>
                 <th style={{ padding: 8 }}>Qty</th>
                 <th style={{ padding: 8 }}>Strike</th>
+                <th style={{ padding: 8 }}>Premium</th>
                 <th style={{ padding: 8 }}>Expiry</th>
                 <th style={{ padding: 8 }} />
               </tr>
             </thead>
+
             <tbody>
               {legs.map((leg) => (
                 <tr key={leg.id} style={{ borderBottom: "1px solid #f2f2f2" }}>
@@ -330,6 +338,17 @@ export default function App() {
                   </td>
 
                   <td style={{ padding: 8 }}>
+                    <input
+                      type="number"
+                      value={leg.premium ?? 0}
+                      step="0.01"
+                      min="0"
+                      onChange={(e) => updateLeg(leg.id, { premium: clampNumber(e.target.value, 0) })}
+                      style={{ width: 110, padding: "6px 8px" }}
+                    />
+                  </td>
+
+                  <td style={{ padding: 8 }}>
                     <select
                       value={leg.exp}
                       onChange={(e) => updateLeg(leg.id, { exp: e.target.value })}
@@ -351,9 +370,10 @@ export default function App() {
                   </td>
                 </tr>
               ))}
+
               {!legs.length ? (
                 <tr>
-                  <td colSpan="6" style={{ padding: 12, opacity: 0.75 }}>
+                  <td colSpan="7" style={{ padding: 12, opacity: 0.75 }}>
                     No legs. Click “Add leg”.
                   </td>
                 </tr>
@@ -364,7 +384,7 @@ export default function App() {
       </div>
 
       <div style={{ marginTop: 14, fontSize: 12, opacity: 0.75 }}>
-        Next improvements: include premium, implied vol, greeks, and real contract selection using expiry and strike.
+        Next: auto-fill premium from IBKR when you select expiry and strike, then compute breakevens, max profit, max loss.
       </div>
     </div>
   );
